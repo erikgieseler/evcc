@@ -14,7 +14,6 @@ params:
   - name: usage
     choice: ["grid", "pv", "battery"]
   - name: host
-    required: true
     help:
       en: IP address or hostname of pypowerwall-server, e.g. 192.0.2.2
       de: IP-Adresse oder Hostname von pypowerwall-server, z.B. 192.0.2.2
