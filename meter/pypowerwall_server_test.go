@@ -187,6 +187,13 @@ func TestPyPowerwallServerReads(t *testing.T) {
 	soc, err := m.batterySoc()
 	require.NoError(t, err)
 	assert.Equal(t, 67.3, soc)
+
+	lim, ok := api.Cap[api.BatterySocLimiter](m)
+	require.True(t, ok, "expected BatterySocLimiter")
+	lower, upper, err := lim.GetSocLimits()
+	require.NoError(t, err)
+	assert.Equal(t, 20.0, lower)
+	assert.Equal(t, 100.0, upper)
 }
 
 func TestPyPowerwallServerCurrentPowerUsage(t *testing.T) {

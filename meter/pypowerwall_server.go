@@ -26,7 +26,7 @@ import (
 // instead of a client-side read followed by a reserve write. Holding
 // deliberately freezes at the actual state of charge, capped at Tesla's 80%
 // reserve limit and without clamping to MinSoc the way the fleet meter's
-// soc-limit controller does.
+// SoC-limit controller does.
 type PyPowerwallServer struct {
 	implement.Caps
 	usage  string
@@ -198,7 +198,7 @@ func NewPyPowerwallServerFromConfig(other map[string]any) (api.Meter, error) {
 			}))
 		}
 
-		// backup reserve is the lower discharge limit, the powerwall has no upper soc limit
+		// backup reserve is the lower discharge limit, the Powerwall has no upper SoC limit
 		implement.Has(m, implement.BatterySocLimiter(func() (float64, float64, error) {
 			op, err := m.opG()
 			if err != nil {
