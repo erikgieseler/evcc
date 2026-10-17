@@ -7,7 +7,7 @@ capabilities: ["battery-control"]
 requirements:
   description:
     de: |
-      Nutzt [pypowerwall-server](https://github.com/jasonacox/pypowerwall-server) als Backend statt dem direkten Gateway-Zugriff. Lesen läuft lokal über dessen Proxy-API, Steuern (Reserve, Entladesperre) über dessen authentifizierte `/control/*`-Routen. Dafür wird im Server `PW_CONTROL_SECRET` gesetzt und hier als Token eingetragen.
+      Nutzt [pypowerwall-server](https://github.com/jasonacox/pypowerwall-server) als Backend statt des direkten Gateway-Zugriffs. Das Lesen läuft lokal über dessen Proxy-API, das Steuern (Reserve, Entladesperre) über dessen authentifizierte `/control/*`-Routen. Dafür wird im Server `PW_CONTROL_SECRET` gesetzt und hier als Token eingetragen.
     en: |
       Uses [pypowerwall-server](https://github.com/jasonacox/pypowerwall-server) as backend instead of direct gateway access. Reads come from its local proxy API, control (reserve, discharge lock) uses its authenticated `/control/*` routes. Set `PW_CONTROL_SECRET` on the server and enter it here as token.
 params:

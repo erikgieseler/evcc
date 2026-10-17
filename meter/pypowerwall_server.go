@@ -33,7 +33,6 @@ type PyPowerwallServer struct {
 	base   string
 	token  string
 	client *http.Client
-	log    *util.Logger
 	meterG func() (pwsAggregates, error)
 	opG    func() (pwsOperation, error)
 	minSoc float64
@@ -137,7 +136,6 @@ func NewPyPowerwallServerFromConfig(other map[string]any) (api.Meter, error) {
 		usage:  strings.ToLower(cc.Usage),
 		base:   normalizePyPowerwallServerBase(cc.URI),
 		token:  cc.Token,
-		log:    log,
 		minSoc: cc.MinSoc,
 		maxSoc: cc.MaxSoc,
 		client: &http.Client{

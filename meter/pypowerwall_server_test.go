@@ -394,7 +394,7 @@ func TestPyPowerwallServerExplicitCapacityWins(t *testing.T) {
 }
 
 func TestPyPowerwallServerBatteryModes(t *testing.T) {
-	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000)}
+	fake := &fakePyPowerwallServer{token: "secret", reserve: 30, apparent: floatptr(15000)}
 	m, srv := newTestPyPowerwallServer(t, fake)
 	defer srv.Close()
 
