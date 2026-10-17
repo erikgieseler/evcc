@@ -56,15 +56,16 @@ func TestPyPowerwallServerNormalizeBase(t *testing.T) {
 // fakePyPowerwallServer is a minimal pypowerwall-server stub: proxy reads plus
 // the authenticated control routes used by the meter.
 type fakePyPowerwallServer struct {
-	mu          sync.Mutex
-	token       string
-	reserve     float64
-	held        int
-	apparent    *float64
-	soeNull     bool
-	reserveNull bool
-	powerNull   bool
-	energyNull  bool
+	mu              sync.Mutex
+	token           string
+	reserve         float64
+	held            int
+	apparent        *float64
+	soeNull         bool
+	reserveNull     bool
+	powerNull       bool
+	energyNull      bool
+	holdUnavailable bool
 }
 
 func floatptr(f float64) *float64 { return &f }
@@ -116,20 +117,31 @@ func (f *fakePyPowerwallServer) handler() http.Handler {
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
+			// mirrors verify_control_token(): 401 when the bearer token differs
 			if r.Header.Get("Authorization") != "Bearer "+f.token {
-				http.Error(w, "forbidden", http.StatusForbidden)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if r.URL.Path == "/control/reserve" {
+				// mirrors the server validation: integer, not bool, 0-100
 				v, ok := body["value"].(float64)
-				if !ok {
+				if !ok || v != math.Trunc(v) || v < 0 || v > 100 {
 					http.Error(w, "bad request", http.StatusBadRequest)
 					return
 				}
 				f.reserve = v
 			} else {
+				// reserve_hold takes an empty JSON object
+				if len(body) > 0 {
+					http.Error(w, "reserve_hold requires an empty JSON object", http.StatusBadRequest)
+					return
+				}
+				if f.holdUnavailable {
+					http.Error(w, "Battery state of charge unavailable", http.StatusServiceUnavailable)
+					return
+				}
 				f.held++
 				f.reserve = 67
 			}
@@ -392,7 +404,35 @@ func TestPyPowerwallServerControlAuth(t *testing.T) {
 	defer srv.Close()
 
 	m.token = "wrong"
-	assert.Error(t, m.setReserve(30))
+	assert.ErrorContains(t, m.setReserve(30), "401")
+}
+
+// TestPyPowerwallServerControlValidation pins the stub to the server's strict
+// payload validation: integer reserve 0-100 (bool and fractions rejected) and
+// an empty object for reserve_hold.
+func TestPyPowerwallServerControlValidation(t *testing.T) {
+	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000)}
+	m, srv := newTestPyPowerwallServer(t, fake)
+	defer srv.Close()
+
+	assert.ErrorContains(t, m.post("/control/reserve", map[string]any{"value": 150}), "400")
+	assert.ErrorContains(t, m.post("/control/reserve", map[string]any{"value": -1}), "400")
+	assert.ErrorContains(t, m.post("/control/reserve", map[string]any{"value": 20.5}), "400")
+	assert.ErrorContains(t, m.post("/control/reserve", map[string]any{"value": true}), "400")
+	assert.ErrorContains(t, m.post("/control/reserve_hold", map[string]any{"value": 1}), "400")
+}
+
+// TestPyPowerwallServerHoldWithoutSoc mirrors the server's 503 when no live
+// state of charge is available to freeze.
+func TestPyPowerwallServerHoldWithoutSoc(t *testing.T) {
+	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000), holdUnavailable: true}
+	m, srv := newTestPyPowerwallServer(t, fake)
+	defer srv.Close()
+
+	ctrl, ok := api.Cap[api.BatteryController](m)
+	require.True(t, ok, "expected BatteryController")
+
+	assert.ErrorContains(t, ctrl.SetBatteryMode(api.BatteryHold), "503")
 }
 
 func TestPyPowerwallServerReadOnlyWithoutToken(t *testing.T) {
