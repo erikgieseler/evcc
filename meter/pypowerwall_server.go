@@ -34,6 +34,7 @@ type PyPowerwallServer struct {
 	client *http.Client
 	log    *util.Logger
 	meterG func() (pwsAggregates, error)
+	opG    func() (pwsOperation, error)
 	minSoc float64
 	maxSoc float64
 }
@@ -144,6 +145,7 @@ func NewPyPowerwallServerFromConfig(other map[string]any) (api.Meter, error) {
 		},
 	}
 	m.meterG = util.Cached(m.getAggregates, cc.Cache)
+	m.opG = util.Cached(m.getOperation, cc.Cache)
 
 	// reading validates connectivity
 	if _, err := m.meterG(); err != nil {
@@ -199,7 +201,7 @@ func NewPyPowerwallServerFromConfig(other map[string]any) (api.Meter, error) {
 
 		// backup reserve is the lower discharge limit, the powerwall has no upper soc limit
 		implement.Has(m, implement.BatterySocLimiter(func() (float64, float64, error) {
-			op, err := m.getOperation()
+			op, err := m.opG()
 			if err != nil {
 				return 0, 0, err
 			}
