@@ -201,7 +201,10 @@ func TestPyPowerwallServerPowerLimits(t *testing.T) {
 		if !ok {
 			return 0, 0, false
 		}
-		charge, discharge := lim.GetPowerLimits()
+		charge, discharge, err := lim.GetPowerLimits()
+		if err != nil {
+			return 0, 0, false
+		}
 		return charge, discharge, true
 	}
 
@@ -254,11 +257,14 @@ func TestPyPowerwallServerBatteryCapacity(t *testing.T) {
 
 	cap, ok := api.Cap[api.BatteryCapacity](m)
 	require.True(t, ok, "expected BatteryCapacity")
-	assert.Equal(t, 27.0, cap.Capacity())
+	v, err := cap.Capacity()
+	require.NoError(t, err)
+	assert.Equal(t, 27.0, v)
 
 	lim, ok := api.Cap[api.BatteryPowerLimiter](m)
 	require.True(t, ok, "expected BatteryPowerLimiter")
-	charge, discharge := lim.GetPowerLimits()
+	charge, discharge, err := lim.GetPowerLimits()
+	require.NoError(t, err)
 	assert.Equal(t, 15000.0, charge)
 	assert.Equal(t, 15000.0, discharge)
 }
@@ -279,7 +285,9 @@ func TestPyPowerwallServerExplicitCapacityWins(t *testing.T) {
 
 	cap, ok := api.Cap[api.BatteryCapacity](m)
 	require.True(t, ok, "expected BatteryCapacity")
-	assert.Equal(t, 30.0, cap.Capacity())
+	v, err := cap.Capacity()
+	require.NoError(t, err)
+	assert.Equal(t, 30.0, v)
 }
 
 func TestPyPowerwallServerBatteryModes(t *testing.T) {
