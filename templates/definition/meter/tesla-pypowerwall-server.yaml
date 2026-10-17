@@ -23,7 +23,6 @@ params:
       en: pypowerwall-server port
       de: pypowerwall-server Port
   - name: token
-    mask: true
     help:
       en: Server control secret (PW_CONTROL_SECRET). Required for battery control, omit for read-only use.
       de: Server Control-Secret (PW_CONTROL_SECRET). Für Batteriesteuerung nötig, weglassen für reinen Lesezugriff.
@@ -40,12 +39,10 @@ params:
       de: Batteriekapazität in kWh (überschreibt den Server-Wert, falls gesetzt)
       en: Battery capacity in kWh (overrides the server value when set)
   - name: maxchargepower
-    advanced: true
     help:
       de: Max. Ladeleistung in W (überschreibt den Wechselrichter-Wert, falls gesetzt)
       en: Max charge power in W (overrides the inverter rating when set)
   - name: maxdischargepower
-    advanced: true
     help:
       de: Max. Entladeleistung in W (überschreibt den Wechselrichter-Wert, falls gesetzt)
       en: Max discharge power in W (overrides the inverter rating when set)
