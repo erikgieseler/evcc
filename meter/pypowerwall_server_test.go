@@ -2,6 +2,7 @@ package meter
 
 import (
 	"encoding/json"
+	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -69,7 +70,7 @@ type fakePyPowerwallServer struct {
 	holdUnavailable bool
 }
 
-func floatptr(f float64) *float64 { return &f }
+func floatptr(f float64) *float64 { return new(f) }
 
 func (f *fakePyPowerwallServer) handler() http.Handler {
 	mux := http.NewServeMux()
@@ -89,6 +90,7 @@ func (f *fakePyPowerwallServer) handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"battery": map[string]any{"instant_power": power(-1200)},
 			"load":    map[string]any{"instant_power": power(2086.75), "energy_imported": energy(70058570.0)},
+			"site":    map[string]any{"instant_power": power(1500)},
 			"solar":   map[string]any{"instant_power": power(2243), "energy_exported": energy(80889089.0)},
 		})
 	})
@@ -187,6 +189,33 @@ func TestPyPowerwallServerReads(t *testing.T) {
 	assert.Equal(t, 67.3, soc)
 }
 
+func TestPyPowerwallServerCurrentPowerUsage(t *testing.T) {
+	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000)}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	for usage, want := range map[string]float64{
+		"battery": -1200,
+		"grid":    1500,
+		"load":    2086.75,
+		"pv":      2243,
+	} {
+		t.Run(usage, func(t *testing.T) {
+			m, err := NewPyPowerwallServerFromConfig(map[string]any{
+				"uri":   srv.URL,
+				"usage": usage,
+				"token": "secret",
+				"cache": time.Millisecond,
+			})
+			require.NoError(t, err)
+
+			power, err := m.CurrentPower()
+			require.NoError(t, err)
+			assert.Equal(t, want, power)
+		})
+	}
+}
+
 func TestPyPowerwallServerTotalEnergy(t *testing.T) {
 	for usage, want := range map[string]float64{
 		"load":  70058.570,
@@ -223,9 +252,7 @@ func TestPyPowerwallServerPowerLimits(t *testing.T) {
 			"token": "secret",
 			"cache": time.Millisecond,
 		}
-		for k, v := range extra {
-			cfg[k] = v
-		}
+		maps.Copy(cfg, extra)
 
 		m, err := NewPyPowerwallServerFromConfig(cfg)
 		require.NoError(t, err)

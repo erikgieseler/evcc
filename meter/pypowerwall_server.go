@@ -24,8 +24,9 @@ import (
 // its authenticated /control/* routes. BatteryHold uses POST
 // /control/reserve_hold (reserve = cached SoC, server-side and race-free)
 // instead of a client-side read followed by a reserve write. Holding
-// deliberately freezes at the actual state of charge, without clamping to
-// MinSoc the way the fleet meter's soc-limit controller does.
+// deliberately freezes at the actual state of charge, capped at Tesla's 80%
+// reserve limit and without clamping to MinSoc the way the fleet meter's
+// soc-limit controller does.
 type PyPowerwallServer struct {
 	implement.Caps
 	usage  string
@@ -382,7 +383,8 @@ func (m *PyPowerwallServer) setReserve(limit float64) error {
 
 // holdReserve freezes the battery at its current level via the server's
 // atomic reserve_hold action (reserve = cached SoC, no client-side race).
-// Deliberately no MinSoc clamp: hold means freezing the actual SoC.
+// Deliberately no MinSoc clamp: hold means freezing the actual SoC, capped by
+// Tesla's 80% reserve limit.
 func (m *PyPowerwallServer) holdReserve() error {
 	return m.post("/control/reserve_hold", map[string]any{})
 }
