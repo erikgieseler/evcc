@@ -48,6 +48,7 @@ const standbyPower = 10 // consider less than 10W as charger in standby
 type updater interface {
 	loadpoint.API
 	Update(sitePower, batteryPower float64, consumption, feedin api.Rates, batteryBuffered, batteryStart bool, greenShare float64, effectivePrice, effectiveCo2 *float64, dim *bool)
+	activeSuggestion() *types.Suggestion
 }
 
 var _ site.API = (*Site)(nil)
@@ -121,6 +122,9 @@ type Site struct {
 	suggestions              map[string]types.Suggestion // Optimizer suggestions by device key
 	suggestionActions        map[string]string           // last notified actionable optimizer action by device key
 	lastOptimizerSolve       *optimizerSolve             // last successful solve, reapplied to newer slots by the control cycle
+	optimizerResult          *optimizerResult            // last published plan, explained on request
+	explainMu                sync.Mutex                  // serializes explain requests
+	explained                explainCache                // last explanation, guarded by explainMu
 
 	optimizerMu      sync.Mutex // guards optimizer runs
 	optimizerUpdated time.Time  // last optimizer run, guarded by optimizerMu
@@ -671,6 +675,11 @@ func (site *Site) collectMeters(key string, meters []config.Device[api.Meter]) [
 			Icon:  props.Icon,
 		}
 
+		// disabled at runtime, skipped until restart
+		if meter == nil {
+			return
+		}
+
 		// power
 		var b bytes.Buffer
 		power, err := backoff.RetryWithData(meter.CurrentPower, modbus.Backoff())
@@ -799,7 +808,11 @@ func (site *Site) updateBatteryMeters() {
 				mm[i].Soc = new(batSoc)
 
 				if bc, ok := api.Cap[api.BatteryCapacity](meter); ok {
-					mm[i].Capacity = new(bc.Capacity())
+					if capacity, err := bc.Capacity(); err == nil {
+						mm[i].Capacity = new(capacity)
+					} else {
+						site.log.ERROR.Printf("battery %d capacity: %v", i+1, err)
+					}
 				}
 
 				site.log.DEBUG.Printf("battery %d soc: %.0f%%", i+1, batSoc)
@@ -811,15 +824,22 @@ func (site *Site) updateBatteryMeters() {
 		if bpl, ok := api.Cap[api.BatteryPowerLimiter](meter); ok && maxDischargePower >= 0 {
 			var empty bool
 			if bsl, ok := api.Cap[api.BatterySocLimiter](meter); ok {
-				minSoc, _ := bsl.GetSocLimits()
-				if mm[i].Soc != nil && *mm[i].Soc <= minSoc {
+				minSoc, _, err := bsl.GetSocLimits()
+				if err != nil {
+					site.log.ERROR.Printf("battery %d soc limits: %v", i+1, err)
+				} else if mm[i].Soc != nil && *mm[i].Soc <= minSoc {
 					empty = true
 				}
 			}
 
 			if !empty {
-				_, discharge := bpl.GetPowerLimits()
-				maxDischargePower += discharge
+				_, discharge, err := bpl.GetPowerLimits()
+				if err != nil {
+					site.log.ERROR.Printf("battery %d power limits: %v", i+1, err)
+					maxDischargePower = -1 // unknown limit disables the cap
+				} else {
+					maxDischargePower += discharge
+				}
 			}
 		} else {
 			maxDischargePower = -1 // any battery without a limit disables the cap
@@ -1015,6 +1035,9 @@ func (site *Site) updateGridMeter() error {
 	mm := types.Measurement{Name: site.gridMeter.Config().Name}
 
 	meter := site.gridMeter.Instance()
+	if meter == nil {
+		return errors.New("grid meter disabled, restart required")
+	}
 
 	if res, err := backoff.RetryWithData(meter.CurrentPower, modbus.Backoff()); err == nil {
 		mm.Power = res
@@ -1152,7 +1175,7 @@ type sitePowerResult struct {
 	batteryStart bool
 
 	// adjustment applied for battery priority below prioritySoc; adding it back
-	// restores the unadjusted site power for a battery-boosting loadpoint
+	// restores the unadjusted site power for loadpoints prioritySoc does not apply to
 	priorityAdjustment float64
 }
 
@@ -1249,6 +1272,29 @@ func (site *Site) updateLoadpoints(rates api.Rates) float64 {
 	wg.Wait()
 
 	return sum
+}
+
+// loadpointSitePower returns the site power the loadpoint controls against:
+// the surplus reserved for higher-priority loadpoints and its own battery priority
+func (site *Site) loadpointSitePower(lp updater, res sitePowerResult) float64 {
+	sitePower := res.power
+
+	// reserve surplus claimed by higher-priority loadpoints that are starting up (#31194)
+	sitePower += site.reservedPVPower(lp)
+
+	// prioritySoc does not apply to a boosting loadpoint, which deliberately drains the
+	// battery (#30541), nor to one the optimizer controls, since the optimizer plans the
+	// home battery: a stop gives the battery priority, a charge takes the surplus (#34606)
+	suggestion := lp.activeSuggestion()
+	if suggestion != nil || lp.GetBatteryBoost() != boostDisabled {
+		sitePower += res.priorityAdjustment
+	}
+
+	if suggestion != nil && suggestion.Action != actionCharge && res.state.battery.Power < 0 {
+		sitePower -= res.state.battery.Power + res.state.excessDCPower
+	}
+
+	return sitePower
 }
 
 // reservedPVPower returns the anticipated surplus claimed by higher-priority PV loadpoints
@@ -1374,19 +1420,8 @@ func (site *Site) updatePower(lp updater, state siteState, totalChargePower floa
 
 	// TODO
 	if lp != nil {
-		sitePower := res.power
-
-		// reserve surplus claimed by higher-priority loadpoints that are starting up (#31194)
-		sitePower += site.reservedPVPower(lp)
-
-		// battery boost deliberately drains the battery, hence battery priority
-		// below prioritySoc does not apply to the boosting loadpoint (#30541)
-		if lp.GetBatteryBoost() != boostDisabled {
-			sitePower += res.priorityAdjustment
-		}
-
 		lp.Update(
-			sitePower, state.battery.Power, consumption, feedin, res.batteryBuffered, res.batteryStart,
+			site.loadpointSitePower(lp, res), state.battery.Power, consumption, feedin, res.batteryBuffered, res.batteryStart,
 			greenShareLoadpoints, site.effectivePrice(greenShareLoadpoints), site.effectiveCo2(greenShareLoadpoints),
 			hems.Dimmed(site.hems),
 		)

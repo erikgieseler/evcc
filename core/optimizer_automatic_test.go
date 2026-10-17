@@ -199,6 +199,27 @@ func TestOptimizerSurplusRegime(t *testing.T) {
 	ctrl.Finish()
 }
 
+// TestOptimizerBatteryFed covers a minimum charge the home battery covers (#34809):
+// the pv loop would count the discharge as deficit and stop after the disable delay,
+// so the loadpoint is pinned to the setpoint instead
+func TestOptimizerBatteryFed(t *testing.T) {
+	enableAutomatic(t)
+
+	lp, charger, ctrl := automaticLoadpoint(t, api.AlwaysChargeOff, true)
+	lp.offeredCurrent = maxA
+
+	lp.setSuggestion(&types.Suggestion{Action: actionCharge, Charge: 1380, Battery: 1000})
+
+	// grid balanced, battery discharging into the site
+	charger.EXPECT().MaxCurrent(int64(minA))
+	lp.Update(2700, 2700, nil, nil, false, false, 0, nil, nil, nil)
+
+	assert.True(t, lp.pvTimer.Equal(elapsed), "pv timer must be elapsed, not running towards disable")
+	assert.True(t, lp.enabled)
+
+	ctrl.Finish()
+}
+
 // TestOptimizerStopFollowsSurplus covers a stop based on a forecast surplus that is
 // too low: the pv loop still enables on measured surplus after the enable delay
 func TestOptimizerStopFollowsSurplus(t *testing.T) {
@@ -225,6 +246,44 @@ func TestOptimizerStopFollowsSurplus(t *testing.T) {
 	assert.True(t, lp.pvTimer.Equal(elapsed))
 }
 
+// TestOptimizerPrioritySoc covers the battery priority of a loadpoint the optimizer
+// controls: prioritySoc does not apply, a stop gives the battery priority and a
+// surplus charge the vehicle (#34606)
+func TestOptimizerPrioritySoc(t *testing.T) {
+	// battery charging 1000W; below prioritySoc the site hides it and forces 100W residual power
+	charging := siteState{battery: types.BatteryState{Power: -1000}}
+	above := sitePowerResult{state: charging, power: -1000}
+	below := sitePowerResult{state: charging, power: 100, priorityAdjustment: -1100}
+
+	for _, tc := range []struct {
+		name      string
+		automatic bool
+		action    string
+		res       sitePowerResult
+		expect    float64
+	}{
+		// the report: above prioritySoc the vehicle took the battery's charge power against the stop
+		{"stop above prioritySoc", true, actionStop, above, 0},
+		{"stop below prioritySoc", true, actionStop, below, 0},
+		{"charge above prioritySoc", true, actionCharge, above, -1000},
+		{"charge below prioritySoc", true, actionCharge, below, -1000},
+		// a discharging battery is not hidden by a stop
+		{"stop while discharging", true, actionStop, sitePowerResult{state: siteState{battery: types.BatteryState{Power: 500}}, power: 500}, 500},
+		// prioritySoc applies to loadpoints the optimizer does not control
+		{"uncontrolled below prioritySoc", false, actionStop, below, 100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lp := NewLoadpoint(util.NewLogger("foo"), nil)
+			lp.site = &mockSite{automatic: tc.automatic}
+			lp.vehicle = modelledVehicle(gomock.NewController(t))
+			lp.setSuggestion(&types.Suggestion{Action: tc.action})
+
+			site := &Site{log: util.NewLogger("foo")}
+			assert.Equal(t, tc.expect, site.loadpointSitePower(lp, tc.res))
+		})
+	}
+}
+
 // TestOptimizerFlexibility covers a loadpoint the optimizer pins to a setpoint:
 // it does not yield to a higher priority loadpoint, so its power is not flexible
 func TestOptimizerFlexibility(t *testing.T) {
@@ -235,10 +294,11 @@ func TestOptimizerFlexibility(t *testing.T) {
 		s    types.Suggestion
 		want float64
 	}{
-		{types.Suggestion{Action: actionCharge, Charge: 3680, Grid: 1000}, 0}, // full power
-		{types.Suggestion{Action: actionCharge, Charge: 2300, Grid: 1000}, 0}, // grid-fed setpoint
-		{types.Suggestion{Action: actionCharge, Charge: 2300}, 2700},          // surplus regime, pv loop yields
-		{types.Suggestion{Action: actionStop}, 2700},                          // stop, pv loop yields
+		{types.Suggestion{Action: actionCharge, Charge: 3680, Grid: 1000}, 0},    // full power
+		{types.Suggestion{Action: actionCharge, Charge: 2300, Grid: 1000}, 0},    // grid-fed setpoint
+		{types.Suggestion{Action: actionCharge, Charge: 2300}, 2700},             // surplus regime, pv loop yields
+		{types.Suggestion{Action: actionCharge, Charge: 2300, Battery: 1000}, 0}, // battery-fed setpoint
+		{types.Suggestion{Action: actionStop}, 2700},                             // stop, pv loop yields
 	} {
 		lp := NewLoadpoint(util.NewLogger("foo"), nil)
 		lp.mode = api.ModeSmart
