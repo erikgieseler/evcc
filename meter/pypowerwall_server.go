@@ -252,7 +252,10 @@ func (m *PyPowerwallServer) post(path string, body any) error {
 		return err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, m.base+path, &buf)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.base+path, &buf)
 	if err != nil {
 		return err
 	}
