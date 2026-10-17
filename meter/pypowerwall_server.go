@@ -60,8 +60,9 @@ type pwsOperation struct {
 // pwsSystemStatus values are optional: zero (also when the server reports
 // null) means no reading, keeping the corresponding capability unregistered.
 type pwsSystemStatus struct {
-	NominalFullPackEnergy float64 `json:"nominal_full_pack_energy"`
-	MaxApparentPower      float64 `json:"max_apparent_power"`
+	NominalFullPackEnergy      float64 `json:"nominal_full_pack_energy"`
+	MaxApparentPower           float64 `json:"max_apparent_power"`
+	InverterNominalUsablePower float64 `json:"inverter_nominal_usable_power"`
 }
 
 type pyPowerwallServerConfig struct {
@@ -179,15 +180,18 @@ func NewPyPowerwallServerFromConfig(other map[string]any) (api.Meter, error) {
 
 		charge, discharge := cc.MaxChargePower, cc.MaxDischargePower
 		if sysErr == nil {
+			// the smallest positive of nameplate and usable power applies to
+			// charging and discharging alike: derated sites report usable
+			// power below their nameplate
+			limit := minPositive(sys.MaxApparentPower, sys.InverterNominalUsablePower)
 			if charge == 0 {
-				charge = sys.MaxApparentPower
+				charge = limit
 			}
 			if discharge == 0 {
-				discharge = sys.MaxApparentPower
+				discharge = limit
 			}
 		}
 		if charge > 0 && discharge > 0 {
-			// inverter apparent power applies to charging and discharging alike
 			implement.Has(m, implement.BatteryPowerLimiter(func() (float64, float64, error) {
 				return charge, discharge, nil
 			}))
@@ -283,6 +287,18 @@ func finite(label string, f float64) (float64, error) {
 		return 0, fmt.Errorf("invalid %s reading: %v", label, f)
 	}
 	return f, nil
+}
+
+// minPositive returns the smallest positive value, or 0 when none is positive.
+// Server readings use 0 for "not available", so it must not win here.
+func minPositive(values ...float64) float64 {
+	var min float64
+	for _, v := range values {
+		if v > 0 && (min == 0 || v < min) {
+			min = v
+		}
+	}
+	return min
 }
 
 // CurrentPower implements the api.Meter interface

@@ -61,6 +61,7 @@ type fakePyPowerwallServer struct {
 	reserve         float64
 	held            int
 	apparent        *float64
+	usable          *float64
 	soeNull         bool
 	reserveNull     bool
 	powerNull       bool
@@ -109,8 +110,9 @@ func (f *fakePyPowerwallServer) handler() http.Handler {
 	})
 	mux.HandleFunc("/api/system_status", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"nominal_full_pack_energy": 27000,
-			"max_apparent_power":       f.apparent,
+			"nominal_full_pack_energy":      27000,
+			"max_apparent_power":            f.apparent,
+			"inverter_nominal_usable_power": f.usable,
 		})
 	})
 	for _, path := range []string{"/control/reserve", "/control/reserve_hold"} {
@@ -262,6 +264,44 @@ func TestPyPowerwallServerPowerLimits(t *testing.T) {
 		require.True(t, ok, "expected BatteryPowerLimiter")
 		assert.Equal(t, 15000.0, charge)
 		assert.Equal(t, 15000.0, discharge)
+	})
+
+	t.Run("usable power derates the nameplate", func(t *testing.T) {
+		fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(10000), usable: floatptr(9200)}
+		m := newMeter(t, fake, nil)
+		charge, discharge, ok := limits(t, m)
+		require.True(t, ok, "expected BatteryPowerLimiter")
+		assert.Equal(t, 9200.0, charge)
+		assert.Equal(t, 9200.0, discharge)
+	})
+
+	t.Run("nameplate caps larger usable power", func(t *testing.T) {
+		fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(10800), usable: floatptr(11600)}
+		m := newMeter(t, fake, nil)
+		charge, discharge, ok := limits(t, m)
+		require.True(t, ok, "expected BatteryPowerLimiter")
+		assert.Equal(t, 10800.0, charge)
+		assert.Equal(t, 10800.0, discharge)
+	})
+
+	t.Run("usable power without nameplate", func(t *testing.T) {
+		fake := &fakePyPowerwallServer{token: "secret", reserve: 20, usable: floatptr(9200)}
+		m := newMeter(t, fake, nil)
+		charge, discharge, ok := limits(t, m)
+		require.True(t, ok, "expected BatteryPowerLimiter")
+		assert.Equal(t, 9200.0, charge)
+		assert.Equal(t, 9200.0, discharge)
+	})
+
+	t.Run("explicit config wins over hardware derate", func(t *testing.T) {
+		fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(10000), usable: floatptr(9200)}
+		m := newMeter(t, fake, map[string]any{
+			"maxchargepower": 10000.0, "maxdischargepower": 10000.0,
+		})
+		charge, discharge, ok := limits(t, m)
+		require.True(t, ok, "expected BatteryPowerLimiter")
+		assert.Equal(t, 10000.0, charge)
+		assert.Equal(t, 10000.0, discharge)
 	})
 
 	t.Run("no limiter when hardware reports null", func(t *testing.T) {
