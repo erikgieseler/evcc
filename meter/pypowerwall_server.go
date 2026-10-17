@@ -23,7 +23,9 @@ import (
 // Reads come from pypowerwall-server's proxy-compatible endpoints, writes go to
 // its authenticated /control/* routes. BatteryHold uses POST
 // /control/reserve_hold (reserve = cached SoC, server-side and race-free)
-// instead of a client-side read followed by a reserve write.
+// instead of a client-side read followed by a reserve write. Holding
+// deliberately freezes at the actual state of charge, without clamping to
+// MinSoc the way the fleet meter's soc-limit controller does.
 type PyPowerwallServer struct {
 	implement.Caps
 	usage  string
@@ -38,21 +40,25 @@ type PyPowerwallServer struct {
 
 // pwsAggregates mirrors pypowerwall-server's /api/meters/aggregates sections
 // (site/solar/battery/load), same shape as the Tesla gateway API.
-// Lifetime energy is in Wh, like the gateway reports it.
+// Lifetime energy is in Wh, like the gateway reports it. Fields the server
+// cannot provide are null; such readings error instead of silently becoming
+// zero.
 type pwsAggregates map[string]struct {
-	InstantPower   float64 `json:"instant_power"`
-	EnergyImported float64 `json:"energy_imported"`
-	EnergyExported float64 `json:"energy_exported"`
+	InstantPower   *float64 `json:"instant_power"`
+	EnergyImported *float64 `json:"energy_imported"`
+	EnergyExported *float64 `json:"energy_exported"`
 }
 
 type pwsSoe struct {
-	Percentage float64 `json:"percentage"`
+	Percentage *float64 `json:"percentage"`
 }
 
 type pwsOperation struct {
-	BackupReservePercent float64 `json:"backup_reserve_percent"`
+	BackupReservePercent *float64 `json:"backup_reserve_percent"`
 }
 
+// pwsSystemStatus values are optional: zero (also when the server reports
+// null) means no reading, keeping the corresponding capability unregistered.
 type pwsSystemStatus struct {
 	NominalFullPackEnergy float64 `json:"nominal_full_pack_energy"`
 	MaxApparentPower      float64 `json:"max_apparent_power"`
@@ -193,7 +199,7 @@ func NewPyPowerwallServerFromConfig(other map[string]any) (api.Meter, error) {
 			if err != nil {
 				return 0, 0, err
 			}
-			return op.BackupReservePercent, 100, nil
+			return *op.BackupReservePercent, 100, nil
 		}))
 
 		if cc.Token == "" {
@@ -287,7 +293,10 @@ func (m *PyPowerwallServer) CurrentPower() (float64, error) {
 	}
 
 	if o, ok := res[m.usage]; ok {
-		return finite("power", o.InstantPower)
+		if o.InstantPower == nil {
+			return 0, fmt.Errorf("server reports no power for %s", m.usage)
+		}
+		return finite("power", *o.InstantPower)
 	}
 
 	return 0, fmt.Errorf("invalid usage: %s", m.usage)
@@ -303,9 +312,15 @@ func (m *PyPowerwallServer) totalEnergy() (float64, error) {
 	if o, ok := res[m.usage]; ok {
 		switch m.usage {
 		case "load":
-			return finite("energy", o.EnergyImported/1e3)
+			if o.EnergyImported == nil {
+				return 0, fmt.Errorf("server reports no energy for %s", m.usage)
+			}
+			return finite("energy", *o.EnergyImported/1e3)
 		case "solar":
-			return finite("energy", o.EnergyExported/1e3)
+			if o.EnergyExported == nil {
+				return 0, fmt.Errorf("server reports no energy for %s", m.usage)
+			}
+			return finite("energy", *o.EnergyExported/1e3)
 		}
 	}
 
@@ -319,13 +334,21 @@ func (m *PyPowerwallServer) batterySoc() (float64, error) {
 		return 0, err
 	}
 
-	return finite("soc", res.Percentage)
+	if res.Percentage == nil {
+		return 0, errors.New("server reports no state of charge")
+	}
+
+	return finite("soc", *res.Percentage)
 }
 
 func (m *PyPowerwallServer) getOperation() (pwsOperation, error) {
 	var res pwsOperation
 	if err := m.get("/api/operation", &res); err != nil {
 		return pwsOperation{}, err
+	}
+
+	if res.BackupReservePercent == nil {
+		return pwsOperation{}, errors.New("server reports no backup reserve")
 	}
 
 	return res, nil
@@ -340,7 +363,8 @@ func (m *PyPowerwallServer) setReserve(limit float64) error {
 }
 
 // holdReserve freezes the battery at its current level via the server's
-// atomic reserve_hold action (reserve = cached SoC, no client-side race)
+// atomic reserve_hold action (reserve = cached SoC, no client-side race).
+// Deliberately no MinSoc clamp: hold means freezing the actual SoC.
 func (m *PyPowerwallServer) holdReserve() error {
 	return m.post("/control/reserve_hold", map[string]any{})
 }

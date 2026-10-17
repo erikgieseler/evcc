@@ -56,11 +56,15 @@ func TestPyPowerwallServerNormalizeBase(t *testing.T) {
 // fakePyPowerwallServer is a minimal pypowerwall-server stub: proxy reads plus
 // the authenticated control routes used by the meter.
 type fakePyPowerwallServer struct {
-	mu       sync.Mutex
-	token    string
-	reserve  float64
-	held     int
-	apparent *float64
+	mu          sync.Mutex
+	token       string
+	reserve     float64
+	held        int
+	apparent    *float64
+	soeNull     bool
+	reserveNull bool
+	powerNull   bool
+	energyNull  bool
 }
 
 func floatptr(f float64) *float64 { return &f }
@@ -68,18 +72,38 @@ func floatptr(f float64) *float64 { return &f }
 func (f *fakePyPowerwallServer) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/meters/aggregates", func(w http.ResponseWriter, r *http.Request) {
+		power := func(v float64) any {
+			if f.powerNull {
+				return nil
+			}
+			return v
+		}
+		energy := func(v float64) any {
+			if f.energyNull {
+				return nil
+			}
+			return v
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"battery": map[string]any{"instant_power": -1200},
-			"load":    map[string]any{"instant_power": 2086.75, "energy_imported": 70058570.0},
-			"solar":   map[string]any{"instant_power": 2243, "energy_exported": 80889089.0},
+			"battery": map[string]any{"instant_power": power(-1200)},
+			"load":    map[string]any{"instant_power": power(2086.75), "energy_imported": energy(70058570.0)},
+			"solar":   map[string]any{"instant_power": power(2243), "energy_exported": energy(80889089.0)},
 		})
 	})
 	mux.HandleFunc("/api/system_status/soe", func(w http.ResponseWriter, r *http.Request) {
+		if f.soeNull {
+			_ = json.NewEncoder(w).Encode(map[string]any{"percentage": nil})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"percentage": 67.3})
 	})
 	mux.HandleFunc("/api/operation", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if f.reserveNull {
+			_ = json.NewEncoder(w).Encode(map[string]any{"backup_reserve_percent": nil})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"backup_reserve_percent": f.reserve})
 	})
 	mux.HandleFunc("/api/system_status", func(w http.ResponseWriter, r *http.Request) {
@@ -312,6 +336,54 @@ func TestPyPowerwallServerBatteryModes(t *testing.T) {
 	assert.Equal(t, 100.0, fake.reserve)
 
 	assert.Error(t, ctrl.SetBatteryMode(api.BatteryMode(42)))
+}
+
+func TestPyPowerwallServerNullPower(t *testing.T) {
+	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000), powerNull: true}
+	m, srv := newTestPyPowerwallServer(t, fake)
+	defer srv.Close()
+
+	_, err := m.CurrentPower()
+	assert.ErrorContains(t, err, "no power")
+}
+
+func TestPyPowerwallServerNullEnergy(t *testing.T) {
+	srv := httptest.NewServer((&fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000), energyNull: true}).handler())
+	defer srv.Close()
+
+	m, err := NewPyPowerwallServerFromConfig(map[string]any{
+		"uri":   srv.URL,
+		"usage": "load",
+		"cache": time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	energy, ok := api.Cap[api.MeterEnergy](m)
+	require.True(t, ok, "expected MeterEnergy")
+
+	_, err = energy.TotalEnergy()
+	assert.ErrorContains(t, err, "no energy")
+}
+
+func TestPyPowerwallServerNullSoc(t *testing.T) {
+	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000), soeNull: true}
+	m, srv := newTestPyPowerwallServer(t, fake)
+	defer srv.Close()
+
+	_, err := m.batterySoc()
+	assert.ErrorContains(t, err, "no state of charge")
+}
+
+func TestPyPowerwallServerNullReserve(t *testing.T) {
+	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000), reserveNull: true}
+	m, srv := newTestPyPowerwallServer(t, fake)
+	defer srv.Close()
+
+	lim, ok := api.Cap[api.BatterySocLimiter](m)
+	require.True(t, ok, "expected BatterySocLimiter")
+
+	_, _, err := lim.GetSocLimits()
+	assert.ErrorContains(t, err, "no backup reserve")
 }
 
 func TestPyPowerwallServerControlAuth(t *testing.T) {
