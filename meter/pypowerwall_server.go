@@ -31,7 +31,7 @@ type PyPowerwallServer struct {
 	implement.Caps
 	usage  string
 	base   string
-	token  string
+	controlSecret  string
 	client *http.Client
 	meterG func() (pwsAggregates, error)
 	opG    func() (pwsOperation, error)
@@ -67,7 +67,7 @@ type pwsSystemStatus struct {
 }
 
 type pyPowerwallServerConfig struct {
-	URI, Usage, Token  string
+	URI, Usage, ControlSecret  string
 	Cache              time.Duration
 	MinSoc, MaxSoc     float64
 	batteryCapacity    `mapstructure:",squash"`
@@ -129,13 +129,13 @@ func NewPyPowerwallServerFromConfig(other map[string]any) (api.Meter, error) {
 		return nil, err
 	}
 
-	log := util.NewLogger("pypowerwall-server").Redact(cc.Token)
+	log := util.NewLogger("pypowerwall-server").Redact(cc.ControlSecret)
 
 	m := &PyPowerwallServer{
 		Caps:   implement.New(),
 		usage:  strings.ToLower(cc.Usage),
 		base:   normalizePyPowerwallServerBase(cc.URI),
-		token:  cc.Token,
+		controlSecret:  cc.ControlSecret,
 		minSoc: cc.MinSoc,
 		maxSoc: cc.MaxSoc,
 		client: &http.Client{
@@ -207,8 +207,8 @@ func NewPyPowerwallServerFromConfig(other map[string]any) (api.Meter, error) {
 			return *op.BackupReservePercent, 100, nil
 		}))
 
-		if cc.Token == "" {
-			log.WARN.Println("no token configured, battery control disabled (read-only)")
+		if cc.ControlSecret == "" {
+			log.WARN.Println("no controlSecret configured, battery control disabled (read-only)")
 		} else {
 			implement.Has(m, implement.BatteryController(batteryModesSocLimit, m.setBatteryMode))
 		}
@@ -244,7 +244,7 @@ func (m *PyPowerwallServer) get(path string, v any) error {
 }
 
 // post sends a JSON POST to a pypowerwall-server /control/* route.
-// The control secret doubles as evcc's token and is sent as bearer token,
+// The control secret doubles as evcc's controlSecret and is sent as bearer controlSecret,
 // the same scheme the server's console uses.
 func (m *PyPowerwallServer) post(path string, body any) error {
 	var buf bytes.Buffer
@@ -260,7 +260,7 @@ func (m *PyPowerwallServer) post(path string, body any) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+m.token)
+	req.Header.Set("Authorization", "Bearer "+m.controlSecret)
 
 	resp, err := m.client.Do(req)
 	if err != nil {
@@ -374,11 +374,14 @@ func (m *PyPowerwallServer) getOperation() (pwsOperation, error) {
 	return res, nil
 }
 
-// setReserve writes an explicit backup reserve level (Tesla accepts up to
-// 80 or exactly 100, like the fleet meter clamps it)
+// setReserve writes an explicit backup reserve level (0-100; v1r accepts
+// 80-100, cloud may reject 81-99; the server validates itself).
 func (m *PyPowerwallServer) setReserve(limit float64) error {
+	if limit < 0 || limit > 100 {
+		return fmt.Errorf("invalid reserve: %v, must be 0-100", limit)
+	}
 	return m.post("/control/reserve", map[string]any{
-		"value": int(teslaReserveLimit(limit)),
+		"value": int(math.Round(limit)),
 	})
 }
 

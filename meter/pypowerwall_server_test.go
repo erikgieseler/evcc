@@ -58,7 +58,7 @@ func TestPyPowerwallServerNormalizeBase(t *testing.T) {
 // the authenticated control routes used by the meter.
 type fakePyPowerwallServer struct {
 	mu              sync.Mutex
-	token           string
+	controlSecret           string
 	reserve         float64
 	held            int
 	apparent        *float64
@@ -121,8 +121,8 @@ func (f *fakePyPowerwallServer) handler() http.Handler {
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
-			// mirrors verify_control_token(): 401 when the bearer token differs
-			if r.Header.Get("Authorization") != "Bearer "+f.token {
+			// mirrors verify_control_controlSecret(): 401 when the bearer controlSecret differs
+			if r.Header.Get("Authorization") != "Bearer "+f.controlSecret {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -163,7 +163,7 @@ func newTestPyPowerwallServer(t *testing.T, fake *fakePyPowerwallServer) (*PyPow
 	m, err := NewPyPowerwallServerFromConfig(map[string]any{
 		"uri":    srv.URL,
 		"usage":  "battery",
-		"token":  "secret",
+		"controlSecret":  "secret",
 		"minsoc": 20.0,
 		"cache":  time.Millisecond,
 	})
@@ -176,7 +176,7 @@ func newTestPyPowerwallServer(t *testing.T, fake *fakePyPowerwallServer) (*PyPow
 }
 
 func TestPyPowerwallServerReads(t *testing.T) {
-	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000)}
+	fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(15000)}
 	m, srv := newTestPyPowerwallServer(t, fake)
 	defer srv.Close()
 
@@ -197,7 +197,7 @@ func TestPyPowerwallServerReads(t *testing.T) {
 }
 
 func TestPyPowerwallServerCurrentPowerUsage(t *testing.T) {
-	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000)}
+	fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(15000)}
 	srv := httptest.NewServer(fake.handler())
 	defer srv.Close()
 
@@ -211,7 +211,7 @@ func TestPyPowerwallServerCurrentPowerUsage(t *testing.T) {
 			m, err := NewPyPowerwallServerFromConfig(map[string]any{
 				"uri":   srv.URL,
 				"usage": usage,
-				"token": "secret",
+				"controlSecret": "secret",
 				"cache": time.Millisecond,
 			})
 			require.NoError(t, err)
@@ -228,7 +228,7 @@ func TestPyPowerwallServerTotalEnergy(t *testing.T) {
 		"load":  70058.570,
 		"solar": 80889.089,
 	} {
-		srv := httptest.NewServer((&fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000)}).handler())
+		srv := httptest.NewServer((&fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(15000)}).handler())
 		defer srv.Close()
 
 		m, err := NewPyPowerwallServerFromConfig(map[string]any{
@@ -256,7 +256,7 @@ func TestPyPowerwallServerPowerLimits(t *testing.T) {
 		cfg := map[string]any{
 			"uri":   srv.URL,
 			"usage": "battery",
-			"token": "secret",
+			"controlSecret": "secret",
 			"cache": time.Millisecond,
 		}
 		maps.Copy(cfg, extra)
@@ -281,7 +281,7 @@ func TestPyPowerwallServerPowerLimits(t *testing.T) {
 	}
 
 	t.Run("explicit config wins over hardware", func(t *testing.T) {
-		fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000)}
+		fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(15000)}
 		m := newMeter(t, fake, map[string]any{
 			"maxchargepower": 9200.0, "maxdischargepower": 9200.0,
 		})
@@ -292,7 +292,7 @@ func TestPyPowerwallServerPowerLimits(t *testing.T) {
 	})
 
 	t.Run("hardware fallback", func(t *testing.T) {
-		fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000)}
+		fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(15000)}
 		m := newMeter(t, fake, nil)
 		charge, discharge, ok := limits(t, m)
 		require.True(t, ok, "expected BatteryPowerLimiter")
@@ -301,7 +301,7 @@ func TestPyPowerwallServerPowerLimits(t *testing.T) {
 	})
 
 	t.Run("usable power derates the nameplate", func(t *testing.T) {
-		fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(10000), usable: floatptr(9200)}
+		fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(10000), usable: floatptr(9200)}
 		m := newMeter(t, fake, nil)
 		charge, discharge, ok := limits(t, m)
 		require.True(t, ok, "expected BatteryPowerLimiter")
@@ -310,7 +310,7 @@ func TestPyPowerwallServerPowerLimits(t *testing.T) {
 	})
 
 	t.Run("nameplate caps larger usable power", func(t *testing.T) {
-		fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(10800), usable: floatptr(11600)}
+		fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(10800), usable: floatptr(11600)}
 		m := newMeter(t, fake, nil)
 		charge, discharge, ok := limits(t, m)
 		require.True(t, ok, "expected BatteryPowerLimiter")
@@ -319,7 +319,7 @@ func TestPyPowerwallServerPowerLimits(t *testing.T) {
 	})
 
 	t.Run("usable power without nameplate", func(t *testing.T) {
-		fake := &fakePyPowerwallServer{token: "secret", reserve: 20, usable: floatptr(9200)}
+		fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, usable: floatptr(9200)}
 		m := newMeter(t, fake, nil)
 		charge, discharge, ok := limits(t, m)
 		require.True(t, ok, "expected BatteryPowerLimiter")
@@ -328,7 +328,7 @@ func TestPyPowerwallServerPowerLimits(t *testing.T) {
 	})
 
 	t.Run("explicit config wins over hardware derate", func(t *testing.T) {
-		fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(10000), usable: floatptr(9200)}
+		fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(10000), usable: floatptr(9200)}
 		m := newMeter(t, fake, map[string]any{
 			"maxchargepower": 10000.0, "maxdischargepower": 10000.0,
 		})
@@ -339,7 +339,7 @@ func TestPyPowerwallServerPowerLimits(t *testing.T) {
 	})
 
 	t.Run("no limiter when hardware reports null", func(t *testing.T) {
-		fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: nil}
+		fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: nil}
 		m := newMeter(t, fake, nil)
 		_, _, ok := limits(t, m)
 		assert.False(t, ok, "expected no BatteryPowerLimiter")
@@ -347,7 +347,7 @@ func TestPyPowerwallServerPowerLimits(t *testing.T) {
 }
 
 func TestPyPowerwallServerRejectsNonFiniteReadings(t *testing.T) {
-	// JSON cannot carry NaN/Inf (Go rejects such tokens on decode),
+	// JSON cannot carry NaN/Inf (Go rejects such controlSecrets on decode),
 	// so the guard itself is unit-tested: absurd decoded values
 	// must error instead of poisoning regulation math.
 	for _, bad := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
@@ -361,7 +361,7 @@ func TestPyPowerwallServerRejectsNonFiniteReadings(t *testing.T) {
 }
 
 func TestPyPowerwallServerBatteryCapacity(t *testing.T) {
-	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000)}
+	fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(15000)}
 	m, srv := newTestPyPowerwallServer(t, fake)
 	defer srv.Close()
 
@@ -380,14 +380,14 @@ func TestPyPowerwallServerBatteryCapacity(t *testing.T) {
 }
 
 func TestPyPowerwallServerExplicitCapacityWins(t *testing.T) {
-	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000)}
+	fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(15000)}
 	srv := httptest.NewServer(fake.handler())
 	defer srv.Close()
 
 	m, err := NewPyPowerwallServerFromConfig(map[string]any{
 		"uri":      srv.URL,
 		"usage":    "battery",
-		"token":    "secret",
+		"controlSecret":    "secret",
 		"cache":    time.Millisecond,
 		"capacity": 30.0,
 	})
@@ -401,7 +401,7 @@ func TestPyPowerwallServerExplicitCapacityWins(t *testing.T) {
 }
 
 func TestPyPowerwallServerBatteryModes(t *testing.T) {
-	fake := &fakePyPowerwallServer{token: "secret", reserve: 30, apparent: floatptr(15000)}
+	fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 30, apparent: floatptr(15000)}
 	m, srv := newTestPyPowerwallServer(t, fake)
 	defer srv.Close()
 
@@ -425,7 +425,7 @@ func TestPyPowerwallServerBatteryModes(t *testing.T) {
 }
 
 func TestPyPowerwallServerNullPower(t *testing.T) {
-	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000), powerNull: true}
+	fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(15000), powerNull: true}
 	m, srv := newTestPyPowerwallServer(t, fake)
 	defer srv.Close()
 
@@ -434,7 +434,7 @@ func TestPyPowerwallServerNullPower(t *testing.T) {
 }
 
 func TestPyPowerwallServerNullEnergy(t *testing.T) {
-	srv := httptest.NewServer((&fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000), energyNull: true}).handler())
+	srv := httptest.NewServer((&fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(15000), energyNull: true}).handler())
 	defer srv.Close()
 
 	m, err := NewPyPowerwallServerFromConfig(map[string]any{
@@ -452,7 +452,7 @@ func TestPyPowerwallServerNullEnergy(t *testing.T) {
 }
 
 func TestPyPowerwallServerNullSoc(t *testing.T) {
-	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000), soeNull: true}
+	fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(15000), soeNull: true}
 	m, srv := newTestPyPowerwallServer(t, fake)
 	defer srv.Close()
 
@@ -461,7 +461,7 @@ func TestPyPowerwallServerNullSoc(t *testing.T) {
 }
 
 func TestPyPowerwallServerNullReserve(t *testing.T) {
-	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000), reserveNull: true}
+	fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(15000), reserveNull: true}
 	m, srv := newTestPyPowerwallServer(t, fake)
 	defer srv.Close()
 
@@ -473,11 +473,11 @@ func TestPyPowerwallServerNullReserve(t *testing.T) {
 }
 
 func TestPyPowerwallServerControlAuth(t *testing.T) {
-	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000)}
+	fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(15000)}
 	m, srv := newTestPyPowerwallServer(t, fake)
 	defer srv.Close()
 
-	m.token = "wrong"
+	m.controlSecret = "wrong"
 	assert.ErrorContains(t, m.setReserve(30), "401")
 }
 
@@ -485,7 +485,7 @@ func TestPyPowerwallServerControlAuth(t *testing.T) {
 // payload validation: integer reserve 0-100 (bool and fractions rejected) and
 // an empty object for reserve_hold.
 func TestPyPowerwallServerControlValidation(t *testing.T) {
-	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000)}
+	fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(15000)}
 	m, srv := newTestPyPowerwallServer(t, fake)
 	defer srv.Close()
 
@@ -499,7 +499,7 @@ func TestPyPowerwallServerControlValidation(t *testing.T) {
 // TestPyPowerwallServerHoldWithoutSoc mirrors the server's 503 when no live
 // state of charge is available to freeze.
 func TestPyPowerwallServerHoldWithoutSoc(t *testing.T) {
-	fake := &fakePyPowerwallServer{token: "secret", reserve: 20, apparent: floatptr(15000), holdUnavailable: true}
+	fake := &fakePyPowerwallServer{controlSecret: "secret", reserve: 20, apparent: floatptr(15000), holdUnavailable: true}
 	m, srv := newTestPyPowerwallServer(t, fake)
 	defer srv.Close()
 
@@ -521,7 +521,7 @@ func TestPyPowerwallServerReadOnlyWithoutToken(t *testing.T) {
 	require.NoError(t, err)
 
 	_, ok := api.Cap[api.BatteryController](m)
-	assert.False(t, ok, "no token must mean no battery control")
+	assert.False(t, ok, "no controlSecret must mean no battery control")
 
 	soc, err := m.(*PyPowerwallServer).batterySoc()
 	require.NoError(t, err)
